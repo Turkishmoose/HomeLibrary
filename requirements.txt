@@ -1,0 +1,2 @@
+# No external dependencies required.
+# Tkinter and sqlite3 are included with standard Python on Raspberry Pi OS.
