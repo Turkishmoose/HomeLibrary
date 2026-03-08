@@ -7,13 +7,42 @@ import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import json
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
+from urllib.error import URLError
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 DB_PATH = Path("data/library.db")
 DEFAULT_LOAN_DAYS = 14
 DEFAULT_MAX_BOOKS = 5
+
+
+def lookup_book_online(isbn: str) -> tuple[str, str] | None:
+    """Fetch book title/author from Open Library using an ISBN barcode."""
+    params = urlencode(
+        {
+            "bibkeys": f"ISBN:{isbn}",
+            "format": "json",
+            "jscmd": "data",
+        }
+    )
+    url = f"https://openlibrary.org/api/books?{params}"
+    with urlopen(url, timeout=4) as response:  # nosec: B310 - trusted Open Library API endpoint
+        payload = json.load(response)
+
+    book_data = payload.get(f"ISBN:{isbn}")
+    if not book_data:
+        return None
+
+    title = str(book_data.get("title", "")).strip()
+    authors = book_data.get("authors") or []
+    author_names = ", ".join(
+        str(author.get("name", "")).strip() for author in authors if author.get("name")
+    )
+    return title, author_names
 
 
 @dataclass
@@ -266,6 +295,10 @@ class HomeLibraryApp(tk.Tk):
         self.book_code_entry = ttk.Entry(grid, width=24)
         self.book_code_entry.grid(row=2, column=1, padx=6, pady=(8, 0))
 
+        ttk.Button(grid, text="Lookup Online", command=self._admin_lookup_book).grid(
+            row=2, column=3, sticky="w", padx=6, pady=(8, 0)
+        )
+
         ttk.Button(grid, text="Add Book", command=self._admin_add_book).grid(row=2, column=4, padx=6, pady=(8, 0))
 
         ttk.Label(grid, text="Loan days").grid(row=3, column=0, sticky="w", pady=(8, 0))
@@ -407,6 +440,37 @@ class HomeLibraryApp(tk.Tk):
         self.book_author_entry.delete(0, "end")
         self.book_code_entry.delete(0, "end")
         self._append_log(f"Added book: {title}")
+
+    def _admin_lookup_book(self) -> None:
+        code = self.book_code_entry.get().strip()
+        if not code:
+            messagebox.showerror("Missing data", "Book barcode/ISBN is required.")
+            return
+        if not code.isdigit():
+            messagebox.showerror("Invalid", "Online lookup currently supports numeric ISBN barcodes.")
+            return
+
+        try:
+            result = lookup_book_online(code)
+        except (URLError, TimeoutError, json.JSONDecodeError):
+            messagebox.showerror("Lookup failed", "Could not reach online book lookup service.")
+            self._append_log(f"Online lookup failed for barcode {code}")
+            return
+
+        if not result:
+            messagebox.showinfo("Not found", "No online book record found for this barcode.")
+            self._append_log(f"Online lookup had no match for barcode {code}")
+            return
+
+        title, authors = result
+        if title:
+            self.book_title_entry.delete(0, "end")
+            self.book_title_entry.insert(0, title)
+        if authors:
+            self.book_author_entry.delete(0, "end")
+            self.book_author_entry.insert(0, authors)
+        self._set_status("Filled book details from online lookup.")
+        self._append_log(f"Online lookup populated details for barcode {code}")
 
     def _admin_save_settings(self) -> None:
         loan_days = self.loan_days_entry.get().strip()
